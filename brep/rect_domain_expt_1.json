@@ -1,0 +1,19 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "cantilever", "l0": 0.18, "d0": 0.09 },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [0.0, 0.0],
+          [0.18, 0.0],
+          [0.18, 0.09],
+          [0.0, 0.09],
+          [0.0, 0.0]
+        ]]
+      }
+    }
+  ]
+}

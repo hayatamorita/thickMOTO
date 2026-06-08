@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "bar_bbox",
+        "lx": 3.125,
+        "ly": 50.0
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [0.0, 0.0],
+            [3.125, 0.0],
+            [3.125, 50.0],
+            [0.0, 50.0],
+            [0.0, 0.0]
+          ]
+        ]
+      }
+    }
+  ]
+}
