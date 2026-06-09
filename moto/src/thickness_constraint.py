@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from scipy import sparse
+from scipy.sparse import linalg as sparse_linalg
 
 
 ProjectionVolumeMode = Literal["reference", "current"]
@@ -108,6 +110,17 @@ class NormalizedGIMPProjection:
     safe_nodes = np.where(valid, self.node_ids, 0)
     gathered = np.where(valid, values[safe_nodes], 0.0)
     return np.sum(self.weights * gathered, axis=1)
+
+
+@dataclass(frozen=True)
+class MaximumThicknessResult:
+  """State and diagnostic fields from one maximum-thickness analysis."""
+
+  characteristic: np.ndarray
+  states: np.ndarray
+  thickness: np.ndarray
+  evaluation: np.ndarray
+  constraint: float
 
 
 @dataclass(frozen=True)
@@ -300,4 +313,144 @@ def build_gimp_projection(
     np.asarray(grid_map.shp_fn),
     np.asarray(volumes),
     mesh.num_nodes,
+  )
+
+
+def _validate_nodal_field(
+  values: np.ndarray, precompute: Rect4Precompute, name: str
+) -> np.ndarray:
+  field = np.asarray(values, dtype=float).reshape(-1)
+  if field.shape != (precompute.num_nodes,):
+    raise ValueError(f"{name} must have shape ({precompute.num_nodes},)")
+  if not np.all(np.isfinite(field)):
+    raise ValueError(f"{name} must contain only finite values")
+  return field
+
+
+def _assemble_state_system(
+  characteristic: np.ndarray,
+  params: MaximumThicknessParams,
+  precompute: Rect4Precompute,
+) -> tuple[sparse.csr_matrix, np.ndarray]:
+  local_matrices = np.zeros((precompute.num_elements, 4, 4))
+  right_hand_sides = np.zeros((2, precompute.num_nodes))
+  for element_index, element in enumerate(precompute.elements):
+    chi_element = characteristic[element]
+    for point_index, shape in enumerate(precompute.shape_values):
+      gradients = precompute.shape_gradients[element_index, point_index]
+      weight = precompute.det_j[element_index, point_index]
+      chi_q = float(shape @ chi_element)
+      local_matrices[element_index] += (
+        params.diffusion * (gradients @ gradients.T)
+        + (1.0 - chi_q) * np.outer(shape, shape)
+      ) * weight
+      for axis in range(2):
+        right_hand_sides[axis, element] += (
+          chi_q * gradients[:, axis] * weight
+        )
+  matrix = sparse.coo_matrix(
+    (
+      local_matrices.ravel(),
+      (precompute.scalar_rows.ravel(), precompute.scalar_cols.ravel()),
+    ),
+    shape=(precompute.num_nodes, precompute.num_nodes),
+  ).tocsr()
+  return matrix, right_hand_sides
+
+
+def _solve_zero_boundary_fields(
+  matrix: sparse.csr_matrix,
+  right_hand_sides: np.ndarray,
+  precompute: Rect4Precompute,
+) -> np.ndarray:
+  free = np.setdiff1d(
+    np.arange(precompute.num_nodes),
+    precompute.boundary_nodes,
+    assume_unique=True,
+  )
+  fields = np.zeros((right_hand_sides.shape[0], precompute.num_nodes))
+  if free.size == 0:
+    return fields
+  try:
+    solve_free = sparse_linalg.factorized(matrix[free][:, free].tocsc())
+    for axis in range(right_hand_sides.shape[0]):
+      fields[axis, free] = solve_free(right_hand_sides[axis, free])
+  except RuntimeError as error:
+    raise np.linalg.LinAlgError("maximum-thickness PDE solve failed") from error
+  if not np.all(np.isfinite(fields)):
+    raise np.linalg.LinAlgError("maximum-thickness PDE solve was non-finite")
+  return fields
+
+
+def _quadrature_fields(
+  states: np.ndarray,
+  params: MaximumThicknessParams,
+  precompute: Rect4Precompute,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  divergence = np.zeros((precompute.num_elements, 4))
+  for element_index, element in enumerate(precompute.elements):
+    state_element = states[:, element]
+    for point_index in range(4):
+      gradients = precompute.shape_gradients[element_index, point_index]
+      divergence[element_index, point_index] = sum(
+        float(gradients[:, axis] @ state_element[axis]) for axis in range(2)
+      )
+  beta = 0.5 * params.h0 * np.sqrt(params.diffusion)
+  q = 1.0 - beta * divergence
+  evaluation = 0.5 * (q + np.sqrt(q**2 + params.ramp_epsilon))
+  denominator = np.sqrt(params.diffusion) * np.maximum(
+    divergence, params.divergence_epsilon
+  )
+  thickness = 2.0 / denominator
+  return divergence, evaluation, thickness
+
+
+def _project_quadrature_field(
+  values: np.ndarray, precompute: Rect4Precompute
+) -> np.ndarray:
+  accumulated = np.zeros(precompute.num_nodes)
+  for element_index, element in enumerate(precompute.elements):
+    for point_index, shape in enumerate(precompute.shape_values):
+      weight = precompute.det_j[element_index, point_index]
+      accumulated[element] += (
+        shape * values[element_index, point_index] * weight
+      )
+  return np.divide(
+    accumulated,
+    precompute.nodal_weights,
+    out=np.zeros_like(accumulated),
+    where=precompute.nodal_weights > 0.0,
+  )
+
+
+def analyze_maximum_thickness(
+  characteristic: np.ndarray,
+  params: MaximumThicknessParams,
+  precompute: Rect4Precompute,
+) -> MaximumThicknessResult:
+  """Solve the state PDE and evaluate the dimensionless thickness constraint."""
+  chi = _validate_nodal_field(characteristic, precompute, "characteristic")
+  if np.any((chi < 0.0) | (chi > 1.0)):
+    raise ValueError("characteristic values must be in [0, 1]")
+  matrix, right_hand_sides = _assemble_state_system(chi, params, precompute)
+  states = _solve_zero_boundary_fields(matrix, right_hand_sides, precompute)
+  _, evaluation_q, thickness_q = _quadrature_fields(
+    states, params, precompute
+  )
+  constraint_integral = 0.0
+  for element_index, element in enumerate(precompute.elements):
+    chi_element = chi[element]
+    for point_index, shape in enumerate(precompute.shape_values):
+      chi_q = float(shape @ chi_element)
+      constraint_integral += (
+        chi_q
+        * evaluation_q[element_index, point_index]
+        * precompute.det_j[element_index, point_index]
+      )
+  return MaximumThicknessResult(
+    characteristic=chi,
+    states=states,
+    thickness=_project_quadrature_field(thickness_q, precompute),
+    evaluation=_project_quadrature_field(evaluation_q, precompute),
+    constraint=float(constraint_integral - params.j_max),
   )
