@@ -121,6 +121,20 @@ class MaximumThicknessResult:
   thickness: np.ndarray
   evaluation: np.ndarray
   constraint: float
+  adjoint: np.ndarray
+  gradient_characteristic: np.ndarray
+
+
+@dataclass(frozen=True)
+class DesignThicknessResult:
+  """Maximum-thickness result and gradient with respect to design density."""
+
+  rho_tilde: np.ndarray
+  rho_bar: np.ndarray
+  phi_particles: np.ndarray
+  phi_nodes: np.ndarray
+  analysis: MaximumThicknessResult
+  gradient_design: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -382,6 +396,67 @@ def _solve_zero_boundary_fields(
   return fields
 
 
+def _assemble_adjoint_right_hand_sides(
+  characteristic: np.ndarray,
+  states: np.ndarray,
+  params: MaximumThicknessParams,
+  precompute: Rect4Precompute,
+) -> np.ndarray:
+  right_hand_sides = np.zeros((2, precompute.num_nodes))
+  beta = 0.5 * params.h0 * np.sqrt(params.diffusion)
+  for element_index, element in enumerate(precompute.elements):
+    chi_element = characteristic[element]
+    state_element = states[:, element]
+    for point_index, shape in enumerate(precompute.shape_values):
+      gradients = precompute.shape_gradients[element_index, point_index]
+      weight = precompute.det_j[element_index, point_index]
+      chi_q = float(shape @ chi_element)
+      divergence = sum(
+        float(gradients[:, axis] @ state_element[axis]) for axis in range(2)
+      )
+      q = 1.0 - beta * divergence
+      ramp_prime = 0.5 * (
+        1.0 + q / np.sqrt(q**2 + params.ramp_epsilon)
+      )
+      for axis in range(2):
+        right_hand_sides[axis, element] += (
+          -beta * chi_q * ramp_prime * gradients[:, axis] * weight
+        )
+  return right_hand_sides
+
+
+def _constraint_gradient_characteristic(
+  characteristic: np.ndarray,
+  states: np.ndarray,
+  adjoint: np.ndarray,
+  evaluation_q: np.ndarray,
+  precompute: Rect4Precompute,
+) -> np.ndarray:
+  gradient = np.zeros(precompute.num_nodes)
+  for element_index, element in enumerate(precompute.elements):
+    state_element = states[:, element]
+    adjoint_element = adjoint[:, element]
+    for point_index, shape in enumerate(precompute.shape_values):
+      gradients = precompute.shape_gradients[element_index, point_index]
+      weight = precompute.det_j[element_index, point_index]
+      divergence_adjoint = sum(
+        float(gradients[:, axis] @ adjoint_element[axis])
+        for axis in range(2)
+      )
+      state_adjoint = sum(
+        float(shape @ state_element[axis])
+        * float(shape @ adjoint_element[axis])
+        for axis in range(2)
+      )
+      integrand = (
+        evaluation_q[element_index, point_index]
+        + divergence_adjoint
+        + state_adjoint
+      )
+      gradient[element] += shape * integrand * weight
+  return gradient
+
+
 def _quadrature_fields(
   states: np.ndarray,
   params: MaximumThicknessParams,
@@ -437,6 +512,15 @@ def analyze_maximum_thickness(
   _, evaluation_q, thickness_q = _quadrature_fields(
     states, params, precompute
   )
+  adjoint_right_hand_sides = _assemble_adjoint_right_hand_sides(
+    chi, states, params, precompute
+  )
+  adjoint = _solve_zero_boundary_fields(
+    matrix, adjoint_right_hand_sides, precompute
+  )
+  gradient_characteristic = _constraint_gradient_characteristic(
+    chi, states, adjoint, evaluation_q, precompute
+  )
   constraint_integral = 0.0
   for element_index, element in enumerate(precompute.elements):
     chi_element = chi[element]
@@ -453,4 +537,80 @@ def analyze_maximum_thickness(
     thickness=_project_quadrature_field(thickness_q, precompute),
     evaluation=_project_quadrature_field(evaluation_q, precompute),
     constraint=float(constraint_integral - params.j_max),
+    adjoint=adjoint,
+    gradient_characteristic=gradient_characteristic,
+  )
+
+
+def _apply_operator(operator, values: np.ndarray) -> np.ndarray:
+  try:
+    return np.asarray(operator @ values, dtype=float).reshape(-1)
+  except TypeError:
+    import jax.numpy as jnp
+
+    return np.asarray(operator @ jnp.asarray(values), dtype=float).reshape(-1)
+
+
+def evaluate_design_thickness(
+  design: np.ndarray,
+  density_filter,
+  threshold_beta: float,
+  threshold_eta: float,
+  projection: NormalizedGIMPProjection,
+  params: MaximumThicknessParams,
+  precompute: Rect4Precompute,
+) -> DesignThicknessResult:
+  """Evaluate ``G_thick`` and its exact discrete gradient with respect to ``x``."""
+  if threshold_beta <= 0.0:
+    raise ValueError("threshold_beta must be positive")
+  if not 0.0 < threshold_eta < 1.0:
+    raise ValueError("threshold_eta must be in (0, 1)")
+  design_values = np.asarray(design, dtype=float).reshape(-1)
+  if design_values.size != projection.node_ids.shape[0]:
+    raise ValueError("design must have one value per material point")
+
+  rho_tilde = _apply_operator(density_filter, design_values)
+  denominator = np.tanh(threshold_beta * threshold_eta) + np.tanh(
+    threshold_beta * (1.0 - threshold_eta)
+  )
+  shifted = threshold_beta * (rho_tilde - threshold_eta)
+  rho_bar = (
+    np.tanh(threshold_beta * threshold_eta) + np.tanh(shifted)
+  ) / denominator
+  threshold_derivative = (
+    threshold_beta * (1.0 - np.tanh(shifted) ** 2) / denominator
+  )
+
+  phi_particles = 2.0 * (rho_bar - 0.5)
+  phi_nodes = projection.apply(phi_particles, inactive_value=-1.0)
+  characteristic = smooth_characteristic(
+    phi_nodes, width=params.characteristic_width
+  )
+  analysis = analyze_maximum_thickness(
+    characteristic, params, precompute
+  )
+
+  gradient_phi_nodes = (
+    analysis.gradient_characteristic
+    * smooth_characteristic_derivative(
+      phi_nodes, width=params.characteristic_width
+    )
+  )
+  gradient_phi_particles = projection.transpose(gradient_phi_nodes)
+  gradient_rho_tilde = (
+    2.0 * gradient_phi_particles * threshold_derivative
+  )
+  gradient_design = _apply_operator(
+    density_filter.T, gradient_rho_tilde
+  )
+  if not np.all(np.isfinite(gradient_design)):
+    raise FloatingPointError("maximum-thickness design gradient is non-finite")
+
+  return DesignThicknessResult(
+    rho_tilde=rho_tilde,
+    rho_bar=rho_bar,
+    phi_particles=phi_particles,
+    phi_nodes=phi_nodes,
+    analysis=analysis,
+    gradient_design=gradient_design,
   )
