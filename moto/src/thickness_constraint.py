@@ -35,6 +35,82 @@ class Rect4Precompute:
 
 
 @dataclass(frozen=True)
+class NormalizedGIMPProjection:
+  """Normalized material-point to grid-node projection."""
+
+  node_ids: np.ndarray
+  weights: np.ndarray
+  active_nodes: np.ndarray
+  num_nodes: int
+
+  @classmethod
+  def from_stencil(
+    cls,
+    node_ids: np.ndarray,
+    shape_values: np.ndarray,
+    particle_volumes: np.ndarray,
+    num_nodes: int,
+  ) -> "NormalizedGIMPProjection":
+    nodes = np.asarray(node_ids, dtype=int)
+    shapes = np.asarray(shape_values, dtype=float)
+    volumes = np.asarray(particle_volumes, dtype=float).reshape(-1)
+    if nodes.shape != shapes.shape:
+      raise ValueError("node_ids and shape_values must have the same shape")
+    if nodes.shape[0] != volumes.size:
+      raise ValueError("particle_volumes must have one value per particle")
+    if np.any(volumes < 0.0):
+      raise ValueError("particle_volumes must be non-negative")
+
+    valid = nodes >= 0
+    if np.any(nodes[valid] >= num_nodes):
+      raise ValueError("node_ids contains an out-of-range grid node")
+    safe_nodes = np.where(valid, nodes, 0)
+    raw_weights = np.where(valid, shapes * volumes[:, None], 0.0)
+    denominator = np.zeros(num_nodes)
+    np.add.at(denominator, safe_nodes.ravel(), raw_weights.ravel())
+    normalized = np.divide(
+      raw_weights,
+      denominator[safe_nodes],
+      out=np.zeros_like(raw_weights),
+      where=valid & (denominator[safe_nodes] > 0.0),
+    )
+    return cls(
+      node_ids=nodes,
+      weights=normalized,
+      active_nodes=denominator > 0.0,
+      num_nodes=int(num_nodes),
+    )
+
+  def apply(
+    self, particle_values: np.ndarray, inactive_value: float = -1.0
+  ) -> np.ndarray:
+    """Project particle values to nodes, using a fixed inactive-node value."""
+    values = np.asarray(particle_values, dtype=float).reshape(-1)
+    if values.size != self.node_ids.shape[0]:
+      raise ValueError("particle_values must have one value per particle")
+    valid = self.node_ids >= 0
+    safe_nodes = np.where(valid, self.node_ids, 0)
+    result = np.zeros(self.num_nodes)
+    np.add.at(
+      result,
+      safe_nodes.ravel(),
+      (self.weights * values[:, None]).ravel(),
+    )
+    result[~self.active_nodes] = inactive_value
+    return result
+
+  def transpose(self, nodal_values: np.ndarray) -> np.ndarray:
+    """Apply the exact transpose of the normalized projection."""
+    values = np.asarray(nodal_values, dtype=float).reshape(-1)
+    if values.size != self.num_nodes:
+      raise ValueError("nodal_values must have one value per grid node")
+    valid = self.node_ids >= 0
+    safe_nodes = np.where(valid, self.node_ids, 0)
+    gathered = np.where(valid, values[safe_nodes], 0.0)
+    return np.sum(self.weights * gathered, axis=1)
+
+
+@dataclass(frozen=True)
 class MaximumThicknessParams:
   """Numerical parameters for the dimensionless thickness analysis."""
 
@@ -180,4 +256,48 @@ def precompute_rect4_mesh(
     scalar_rows=scalar_rows,
     scalar_cols=scalar_cols,
     boundary_nodes=np.flatnonzero(boundary_mask),
+  )
+
+
+def build_gimp_projection(
+  mesh,
+  reference_state,
+  current_state=None,
+  mode: ProjectionVolumeMode = "reference",
+) -> NormalizedGIMPProjection:
+  """Build a normalized GIMP projection for a reference or current state."""
+  if mode not in ("reference", "current"):
+    raise ValueError("mode must be 'reference' or 'current'")
+  if mode == "reference":
+    state = reference_state
+    coordinates = state.coord
+    domain_lengths = state.domain_length0
+    volumes = state.volume0
+  else:
+    if current_state is None:
+      raise ValueError("current_state is required when mode='current'")
+    state = current_state
+    coordinates = state.coord
+    domain_lengths = state.domain_length
+    volumes = state.volume
+
+  from moto.src import mpm_elem_map
+
+  _, grid_map = mpm_elem_map.update_grid_particle_map(
+    mp_coord=coordinates,
+    mp_domain_length=domain_lengths,
+    mesh_node_coords=mesh.nodes.coords,
+    mesh_elem_nodes=mesh.elem_nodes,
+    mesh_elem_min=mesh.elem_coord_min,
+    mesh_elem_max=mesh.elem_coord_max,
+    mesh_elem_size=mesh.elem_size,
+    mp_max_elems_per_point=state.max_elems_per_point,
+    mp_max_nodes_per_point=state.max_nodes_per_point,
+    mp_num_pts=state.num_pts,
+  )
+  return NormalizedGIMPProjection.from_stencil(
+    np.asarray(grid_map.grid_nodes_of_mp),
+    np.asarray(grid_map.shp_fn),
+    np.asarray(volumes),
+    mesh.num_nodes,
   )
