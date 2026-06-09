@@ -12,6 +12,29 @@ ProjectionVolumeMode = Literal["reference", "current"]
 
 
 @dataclass(frozen=True)
+class Rect4Precompute:
+  """Dimensionless Rect4 quantities shared by all thickness solves."""
+
+  nodes: np.ndarray
+  elements: np.ndarray
+  shape_values: np.ndarray
+  shape_gradients: np.ndarray
+  det_j: np.ndarray
+  nodal_weights: np.ndarray
+  scalar_rows: np.ndarray
+  scalar_cols: np.ndarray
+  boundary_nodes: np.ndarray
+
+  @property
+  def num_nodes(self) -> int:
+    return int(self.nodes.shape[0])
+
+  @property
+  def num_elements(self) -> int:
+    return int(self.elements.shape[0])
+
+
+@dataclass(frozen=True)
 class MaximumThicknessParams:
   """Numerical parameters for the dimensionless thickness analysis."""
 
@@ -74,3 +97,87 @@ def smooth_characteristic_derivative(
     15.0 / 16.0 - 15.0 / 8.0 * x**2 + 15.0 / 16.0 * x**4
   ) / width
   return result
+
+
+def _rect4_shape_values(xi: float, eta: float) -> np.ndarray:
+  return 0.25 * np.array(
+    [
+      (1.0 - xi) * (1.0 - eta),
+      (1.0 + xi) * (1.0 - eta),
+      (1.0 + xi) * (1.0 + eta),
+      (1.0 - xi) * (1.0 + eta),
+    ]
+  )
+
+
+def _rect4_shape_gradients_reference(xi: float, eta: float) -> np.ndarray:
+  return 0.25 * np.array(
+    [
+      [-(1.0 - eta), -(1.0 - xi)],
+      [1.0 - eta, -(1.0 + xi)],
+      [1.0 + eta, 1.0 + xi],
+      [-(1.0 + eta), 1.0 - xi],
+    ]
+  )
+
+
+def precompute_rect4_mesh(
+  mesh, reference_length: float = 0.09
+) -> Rect4Precompute:
+  """Precompute a 2D MPM grid in dimensionless coordinates."""
+  if reference_length <= 0.0:
+    raise ValueError("reference_length must be positive")
+  if int(mesh.num_dim) != 2:
+    raise ValueError("maximum-thickness analysis currently supports only 2D")
+
+  nodes = np.asarray(mesh.nodes.coords, dtype=float) / reference_length
+  elements = np.asarray(mesh.elem_nodes, dtype=int)
+  if elements.ndim != 2 or elements.shape[1] != 4:
+    raise ValueError("mesh.elem_nodes must have shape (num_elements, 4)")
+
+  gauss = (-1.0 / np.sqrt(3.0), 1.0 / np.sqrt(3.0))
+  points = [(xi, eta) for xi in gauss for eta in gauss]
+  shape_values = np.array(
+    [_rect4_shape_values(xi, eta) for xi, eta in points]
+  )
+  shape_gradients = np.empty((elements.shape[0], 4, 4, 2))
+  det_j = np.empty((elements.shape[0], 4))
+  nodal_weights = np.zeros(nodes.shape[0])
+
+  for element_index, element in enumerate(elements):
+    element_coords = nodes[element]
+    for point_index, (xi, eta) in enumerate(points):
+      gradients_reference = _rect4_shape_gradients_reference(xi, eta)
+      jacobian = gradients_reference.T @ element_coords
+      determinant = float(np.linalg.det(jacobian))
+      if determinant <= 0.0:
+        raise ValueError("Rect4 element has a non-positive Jacobian")
+      shape_gradients[element_index, point_index] = (
+        gradients_reference @ np.linalg.inv(jacobian)
+      )
+      det_j[element_index, point_index] = determinant
+      nodal_weights[element] += shape_values[point_index] * determinant
+
+  local_rows, local_cols = np.meshgrid(
+    np.arange(4), np.arange(4), indexing="ij"
+  )
+  scalar_rows = elements[:, local_rows.ravel()]
+  scalar_cols = elements[:, local_cols.ravel()]
+  lower = np.min(nodes, axis=0)
+  upper = np.max(nodes, axis=0)
+  boundary_mask = np.zeros(nodes.shape[0], dtype=bool)
+  for axis in range(2):
+    boundary_mask |= np.isclose(nodes[:, axis], lower[axis])
+    boundary_mask |= np.isclose(nodes[:, axis], upper[axis])
+
+  return Rect4Precompute(
+    nodes=nodes,
+    elements=elements,
+    shape_values=shape_values,
+    shape_gradients=shape_gradients,
+    det_j=det_j,
+    nodal_weights=nodal_weights,
+    scalar_rows=scalar_rows,
+    scalar_cols=scalar_cols,
+    boundary_nodes=np.flatnonzero(boundary_mask),
+  )
