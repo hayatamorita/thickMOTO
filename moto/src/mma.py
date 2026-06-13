@@ -203,7 +203,8 @@ def update_mma(
   grad_obj: np.ndarray,
   cons: np.ndarray,
   grad_cons: np.ndarray,
-) -> MMAState:
+  return_multipliers: bool = False,
+) -> MMAState | tuple[MMAState, np.ndarray]:
   """Call single step of MMA update.
 
   Args:
@@ -218,10 +219,10 @@ def update_mma(
       constraints.
     grad_cons: Array of shape (num_cons, num_design_var) that contain the
       gradient of each of the constraints w.r.t each of the design variables
+    return_multipliers: Return the MMA constraint multipliers with the state.
 
   Returns:
-    A MMAState dataclass that contains the updated state of the
-    optimization.
+    Updated MMA state, optionally paired with the constraint multipliers.
   """
   mma_state.epoch += 1
   epoch = mma_state.epoch
@@ -299,6 +300,8 @@ def update_mma(
     logging.info("KKT tolerance satisfied")
     mma_state.is_converged = True
 
+  if return_multipliers:
+    return mma_state, lam.copy()
   return mma_state
 
 
