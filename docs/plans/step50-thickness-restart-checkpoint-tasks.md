@@ -25,7 +25,7 @@
 
 ### Phase 1: Test Contract
 
-- [] Task 1: `1_validation_alt.ipynb` の現在構造を確認する
+- [o] Task 1: `1_validation_alt.ipynb` の現在構造を確認する
   - Acceptance: `optimize_design()` の引数、返り値、`convg_history` のキーを確認できている。
   - Acceptance: `MMAState` の保存・復元に必要な値が特定できている。
   - Verify: `.venv/bin/python -c "import json; nb=json.load(open('examples/1_validation_alt.ipynb')); print(len(nb['cells']))"`
@@ -33,7 +33,7 @@
   - Dependencies: None
   - Scope: XS
 
-- [] Task 2: checkpoint fixtureの扱いを決める
+- [o] Task 2: checkpoint fixtureの扱いを決める
   - Acceptance: `examples/checkpoints/1_validation_alt_step50.npz` のキー一覧が決まっている。
   - Acceptance: checkpointがない場合のテスト挙動を `skip` または `fail` のどちらかに固定する。
   - Verify: checkpoint仕様がテスト内の定数として読める。
@@ -41,7 +41,7 @@
   - Dependencies: Task 1
   - Scope: XS
 
-- [] Task 3: 失敗するrestartテストを書く
+- [o] Task 3: 失敗するrestartテストを書く
   - Acceptance: `test_restart_from_step50_decreases_thickness_violation()` が存在する。
   - Acceptance: `MMAState.from_array()` でcheckpointを復元する想定になっている。
   - Acceptance: 再開後の `max(G_thick, 0)` 非増加を検証している。
@@ -51,12 +51,12 @@
   - Scope: S
 
 ### Checkpoint: RED
-- [] Test fails for the expected reason: restart API or checkpoint loading path is missing.
-- [] Failure reason is not import error from unrelated modules.
+- [o] Test fails for the expected reason: restart API or checkpoint loading path is missing.
+- [o] Failure reason is not import error from unrelated modules.
 
 ### Phase 2: Notebook Restart API
 
-- [] Task 4: `optimize_design()` に `initial_mma_state` を追加する
+- [o] Task 4: `optimize_design()` に `initial_mma_state` を追加する
   - Acceptance: `initial_mma_state=None` なら従来通り一様初期密度から開始する。
   - Acceptance: `initial_mma_state` が渡されたら `init_mma()` し直さない。
   - Acceptance: `num_design_var` と `initial_mma_state.x` の形状不一致を検出する。
@@ -65,7 +65,7 @@
   - Dependencies: Task 3
   - Scope: S
 
-- [] Task 5: `convg_history` にrestart検証用履歴を残す
+- [o] Task 5: `convg_history` にrestart検証用履歴を残す
   - Acceptance: `thickness_cons` に再開後の `G_thick` が記録される。
   - Acceptance: `epoch` がcheckpointのepochから継続する。
   - Acceptance: `constraint_mode="volume_and_thickness"` と `thickness_start_epoch=50` で厚み制約が有効化される。
@@ -75,12 +75,12 @@
   - Scope: XS
 
 ### Checkpoint: Restart API
-- [] `initial_mma_state=None` の既存動作が維持されている。
-- [] `initial_mma_state` 指定時にcheckpoint epochから再開できる。
+- [o] `initial_mma_state=None` の既存動作が維持されている。
+- [o] `initial_mma_state` 指定時にcheckpoint epochから再開できる。
 
 ### Phase 3: Checkpoint Save and Load
 
-- [] Task 6: 50 step checkpoint保存セルを追加する
+- [o] Task 6: 50 step checkpoint保存セルを追加する
   - Acceptance: `examples/checkpoints/` を作成して `.npz` を保存できる。
   - Acceptance: `mma_state.to_array()`、`num_design_var`、`epoch`、`max_vol_frac` を保存する。
   - Acceptance: 確認用に `rho_phys`、`G_thick`、`G_vol` を保存できる。
@@ -89,7 +89,7 @@
   - Dependencies: Task 5
   - Scope: S
 
-- [] Task 7: checkpointロード再開セルを追加する
+- [o] Task 7: checkpointロード再開セルを追加する
   - Acceptance: `.npz` から `MMAState` を復元できる。
   - Acceptance: 復元状態から厚み制約ONで短いstep数だけ再開できる。
   - Acceptance: 再開後の `G_thick` と厚み違反量を表示できる。
@@ -105,7 +105,7 @@
 
 ### Phase 4: Thickness Reference and Diagnostics
 
-- [] Task 8: thickLSTO参照ロジックとの差分を明示する
+- [o] Task 8: thickLSTO参照ロジックとの差分を明示する
   - Acceptance: `shape_derivative` は生感度、`sensitivity` はHelmholtz後感度として扱う。
   - Acceptance: `1_validation_alt.ipynb` では反応拡散更新を移植しない。
   - Acceptance: MMAに入る厚み感度がどれかをコメントまたは表示で確認できる。
@@ -114,7 +114,7 @@
   - Dependencies: Task 7
   - Scope: S
 
-- [] Task 9: restartテストをGREENにする
+- [o] Task 9: restartテストをGREENにする
   - Acceptance: checkpointがある場合、restartテストが通る。
   - Acceptance: `max(G_thick, 0)` がstepごとに非増加である。
   - Acceptance: `G_thick`、感度、設計変数が有限値である。
@@ -124,19 +124,19 @@
   - Scope: M
 
 ### Checkpoint: GREEN
-- [] restartテストが通る。
-- [] checkpointなしの場合の挙動が仕様通りである。
+- [o] restartテストが通る。
+- [o] checkpointなしの場合の挙動が仕様通りである。
 
 ### Phase 5: Final Verification
 
-- [] Task 10: 既存厚みテストを実行する
+- [o] Task 10: 既存厚みテストを実行する
   - Acceptance: 既存の厚みPDE、投影、勾配テストが壊れていない。
   - Verify: `.venv/bin/python -m unittest tests.test_thickness_pde tests.test_thickness_projection tests.test_thickness_gradient tests.test_thickness_constraint`
   - Files: None
   - Dependencies: Task 9
   - Scope: XS
 
-- [] Task 11: docsとタスク状態を更新する
+- [o] Task 11: docsとタスク状態を更新する
   - Acceptance: 完了済みタスクを `[o]` に更新する。
   - Acceptance: 実装中に仕様変更があればspecへ反映する。
   - Verify: `wc -l docs/specs/step50-thickness-restart-checkpoint-spec.md docs/plans/step50-thickness-restart-checkpoint-tasks.md`

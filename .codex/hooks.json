@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/bin/python .codex/hooks/pre_tool_use_policy.py",
+            "timeout": 10,
+            "statusMessage": "Checking command safety policy"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".venv/bin/python .codex/hooks/ruff_format.py",
+            "timeout": 30,
+            "statusMessage": "Formatting edited Python files with Ruff"
+          }
+        ]
+      }
+    ]
+  }
+}

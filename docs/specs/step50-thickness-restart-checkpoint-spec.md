@@ -139,7 +139,7 @@ def test_restart_from_step50_decreases_thickness_violation():
 4. `G_thick` が有限値であることを確認する。
 5. `max(G_thick, 0)` がstepごとに下がることを確認する。
 
-通常のテストでは、50 step計算そのものは実行しない。50 step checkpointがない場合は、明示的に失敗またはskipにする方針を選ぶ。
+通常のテストでは、50 step計算そのものは実行しない。50 step checkpointがない場合はskipする。checkpointが存在し、restart履歴が保存されている場合だけ、厚み違反量の非増加を検証する。
 
 ## Commands
 環境作成:
@@ -178,7 +178,7 @@ uv venv .venv --python 3.12
 - 再開後の厚み違反量 `max(G_thick, 0)` がstepごとに非増加になる。
 - 既存の `examples/1_validation.ipynb` は変更しない。
 
-## Open Questions
-- checkpointが存在しない場合、テストをfailにするかskipにするか。
-- checkpoint `.npz` をGit管理するか、生成手順のみGit管理するか。
-- 再開後の検証step数を5にするか、より短い2から3 stepにするか。
+## Decisions
+- checkpointが存在しない場合、restart履歴テストはskipする。
+- checkpoint `.npz` はGit管理せず、`1_validation_alt.ipynb` の保存セルで生成する。
+- 再開後の検証step数は初期値として5 stepにする。
